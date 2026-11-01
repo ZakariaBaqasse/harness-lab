@@ -1,0 +1,4 @@
+.env
+traces/
+*.pyc
+__pycache__/
