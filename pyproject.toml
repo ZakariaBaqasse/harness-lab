@@ -21,6 +21,8 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pytest>=9.2.0",
+    "pytest-mock>=3.17.0",
     "ruff>=0.17.3",
 ]
 
@@ -32,4 +34,7 @@ extend-select = [
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
+
+[pytest]
+testpaths = ["tests"]
 

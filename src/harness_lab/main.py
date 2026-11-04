@@ -23,9 +23,9 @@ MODEL = "mistral-small-2603"
 api_key = os.environ["MISTRAL_API_KEY"]
 
 
-def harness_lab_main() -> None:
+def harness_lab_main(client: Mistral) -> None:
     """Run the project-status harness and record its trace."""
-    client = Mistral(api_key=api_key)
+    # client = Mistral(api_key=api_key)
     messageslist: list = [
         {"role": "user", "content": "Check the status of project Atlas"}
     ]
@@ -68,7 +68,9 @@ def harness_lab_main() -> None:
             )
 
             if not response.choices or response.choices[0].message is None:
-                raise ValueError("The response contains no assistant message")
+                raise ValueError(
+                    "The response is malformed or contains no assistant message"
+                )
 
             message = response.choices[0].message
             tool_calls = (
@@ -174,7 +176,6 @@ def harness_lab_main() -> None:
                 raise RuntimeError("Max iterations reached")
 
         except Exception as e:
-            print(f"An error occurred: {e}")
             save_trace(
                 str(run_id),
                 {
@@ -189,7 +190,6 @@ def harness_lab_main() -> None:
             )
             raise
 
-    print(f"Run completed for run_id: {run_id} with total iterations: {iterations}")
     save_trace(
         str(run_id),
         {
@@ -210,4 +210,5 @@ def harness_lab_main() -> None:
 
 
 if __name__ == "__main__":
-    harness_lab_main()
+    client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
+    harness_lab_main(client)
