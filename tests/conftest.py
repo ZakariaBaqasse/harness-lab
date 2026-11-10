@@ -4,6 +4,9 @@ import copy
 import importlib
 
 import pytest
+from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+
+from harness_lab.constants import TOKENIZER_REPO_ID
 
 
 @pytest.fixture()
@@ -11,6 +14,13 @@ def main(mocker):
     """Import harness_lab.main with trace saving mocked out."""
     module = importlib.import_module("harness_lab.main")
     mocker.patch.object(module, "save_trace")
+    return module
+
+
+@pytest.fixture()
+def token_counter_module():
+    """Import harness_lab.token_counter with trace saving mocked out."""
+    module = importlib.import_module("harness_lab.token_counter")
     return module
 
 
@@ -35,3 +45,9 @@ def mistral_client(mocker):
         return client, requests
 
     return _build
+
+
+@pytest.fixture
+def tokenizer():
+    """Fixture for the Mistral tokenizer."""
+    return MistralTokenizer.from_hf_hub(repo_id=TOKENIZER_REPO_ID)

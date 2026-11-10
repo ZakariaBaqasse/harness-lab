@@ -6,12 +6,19 @@ from datetime import datetime
 from uuid import uuid4
 
 from dotenv import load_dotenv
+from mistral_common.protocol.instruct.messages import (
+    ToolMessage,
+    UserMessage,
+)
+from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
 from mistralai.client import Mistral
 from mistralai.client.models import (
     ChatCompletionResponse,
 )
 
+from harness_lab.constants import TOKENIZER_REPO_ID
 from harness_lab.fake_tool import names_to_functions, tools
+from harness_lab.token_counter import check_compaction_needed
 from harness_lab.trace import save_trace
 
 load_dotenv()
@@ -23,12 +30,9 @@ MODEL = "mistral-small-2603"
 api_key = os.environ["MISTRAL_API_KEY"]
 
 
-def harness_lab_main(client: Mistral) -> None:
+def harness_lab_main(client: Mistral, tokenizer: MistralTokenizer) -> None:
     """Run the project-status harness and record its trace."""
-    # client = Mistral(api_key=api_key)
-    messageslist: list = [
-        {"role": "user", "content": "Check the status of project Atlas"}
-    ]
+    messages_list: list = [UserMessage(content="Check the status of project Atlas")]
     run_id = uuid4()
     iterations = 0
     save_trace(
@@ -38,7 +42,7 @@ def harness_lab_main(client: Mistral) -> None:
             "run_id": str(run_id),
             "sequence": iterations,
             "timestamp": datetime.now().isoformat(),
-            "task": messageslist[0].get("content"),
+            "task": messages_list[0].content,
         },
     )
     response: ChatCompletionResponse | None = None
@@ -55,14 +59,31 @@ def harness_lab_main(client: Mistral) -> None:
                     "sequence": iterations,
                     "model": MODEL,
                     "tools": tools,
-                    "messages": messageslist,
-                    "message_count": len(messageslist),
+                    "messages": [m.model_dump() for m in messages_list],
+                    "message_count": len(messages_list),
                     "timestamp": datetime.now().isoformat(),
                 },
             )
+            compaction_status = check_compaction_needed(
+                messages_list, tokenizer, tools=tools
+            )
+            if compaction_status["compaction_needed"]:
+                save_trace(
+                    str(run_id),
+                    {
+                        "event_type": "compaction_needed",
+                        "run_id": str(run_id),
+                        "sequence": iterations,
+                        "timestamp": datetime.now().isoformat(),
+                        "estimated_tokens": compaction_status["estimated_tokens"],
+                    },
+                )
+                # TODO: Implement message compaction logic here instead of raising an error.
+                raise RuntimeError("Compaction needed")
+
             response = client.chat.complete(
                 model=MODEL,
-                messages=messageslist,
+                messages=[m.model_dump() for m in messages_list],
                 tools=tools,
                 tool_choice="auto",
             )
@@ -72,12 +93,21 @@ def harness_lab_main(client: Mistral) -> None:
                     "The response is malformed or contains no assistant message"
                 )
 
+            total_input_tokens += (
+                response.usage.prompt_tokens if response.usage.prompt_tokens else 0
+            )
+            total_output_tokens += (
+                response.usage.completion_tokens
+                if response.usage.completion_tokens
+                else 0
+            )
+
             message = response.choices[0].message
             tool_calls = (
                 message.tool_calls if isinstance(message.tool_calls, list) else []
             )
 
-            messageslist.append(message.model_dump())
+            messages_list.append(message)
             save_trace(
                 str(run_id),
                 {
@@ -98,7 +128,7 @@ def harness_lab_main(client: Mistral) -> None:
                         }
                         for tool_call in tool_calls
                     ],
-                    "messages": [m for m in messageslist],
+                    "messages": [m.model_dump() for m in messages_list],
                     "finish_reason": response.choices[0].finish_reason,
                     "final_answer": response.choices[0].message.content
                     if response.choices and response.choices[0].message
@@ -128,13 +158,12 @@ def harness_lab_main(client: Mistral) -> None:
                 function_results = names_to_functions[function_name](
                     **function_arguments
                 )
-                messageslist.append(
-                    {
-                        "role": "tool",
-                        "name": function_name,
-                        "content": function_results,
-                        "tool_call_id": tool_call.id,
-                    }
+                messages_list.append(
+                    ToolMessage(
+                        name=function_name,
+                        content=function_results,
+                        tool_call_id=tool_call.id,
+                    )
                 )
 
                 save_trace(
@@ -146,18 +175,11 @@ def harness_lab_main(client: Mistral) -> None:
                         "function_name": function_name,
                         "function_arguments": function_arguments,
                         "function_results": function_results,
+                        "messages": [m.model_dump() for m in messages_list],
                         "timestamp": datetime.now().isoformat(),
                     },
                 )
 
-            total_input_tokens += (
-                response.usage.prompt_tokens if response.usage.prompt_tokens else 0
-            )
-            total_output_tokens += (
-                response.usage.completion_tokens
-                if response.usage.completion_tokens
-                else 0
-            )
             iterations += 1
             if iterations >= MAX_ITERATIONS:
                 save_trace(
@@ -170,7 +192,7 @@ def harness_lab_main(client: Mistral) -> None:
                         "status": "max_iterations_reached",
                         "total_input_tokens": total_input_tokens,
                         "total_output_tokens": total_output_tokens,
-                        "messages": messageslist,
+                        "messages": [m.model_dump() for m in messages_list],
                     },
                 )
                 raise RuntimeError("Max iterations reached")
@@ -184,6 +206,7 @@ def harness_lab_main(client: Mistral) -> None:
                     "sequence": iterations,
                     "timestamp": datetime.now().isoformat(),
                     "status": "failed",
+                    "messages": [m.model_dump() for m in messages_list],
                     "final_answer": None,
                     "error": str(e),
                 },
@@ -200,6 +223,7 @@ def harness_lab_main(client: Mistral) -> None:
             "final_answer": response.choices[0].message.content
             if response and response.choices[0].message
             else None,
+            "messages": [m.model_dump() for m in messages_list],
             "total_input_tokens": total_input_tokens,
             "total_output_tokens": total_output_tokens,
             "total_duration_ms": int(
@@ -209,6 +233,12 @@ def harness_lab_main(client: Mistral) -> None:
     )
 
 
+def main() -> None:
+    """Create the client and run the harness."""
+    client = Mistral(api_key=api_key)
+    tokenizer = MistralTokenizer.from_hf_hub(repo_id=TOKENIZER_REPO_ID)
+    harness_lab_main(client=client, tokenizer=tokenizer)
+
+
 if __name__ == "__main__":
-    client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
-    harness_lab_main(client)
+    main()
